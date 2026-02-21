@@ -1,0 +1,22 @@
+name: sigbert-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - pip
+  - numpy
+  - pandas<2.0
+  - scikit-learn
+  - scipy
+  - matplotlib
+  - seaborn
+  - tqdm
+  - lifelines
+  - scikit-survival
+  - skglm
+  - ipykernel
+  - jupyterlab
+  - environment.yml
+  - pip:
+      - iisignature==0.24

@@ -1,0 +1,89 @@
+############################
+# OS
+############################
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+############################
+# Python
+############################
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env/
+.venv/
+venv/
+ENV/
+env/
+
+# Conda
+*.conda
+*.log
+
+############################
+# Jupyter
+############################
+
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+############################
+# Data (do NOT version datasets)
+############################
+
+data/*
+!data/README.md
+
+*.csv
+*.xlsx
+*.parquet
+*.feather
+*.pkl
+
+############################
+# Models (heavy files)
+############################
+
+models/*
+!models/README.md
+
+*.pt
+*.bin
+*.ckpt
+*.onnx
+
+############################
+# Results / Outputs
+############################
+
+results/*
+!results/README.md
+
+*.svg
+
+############################
+# Logs
+############################
+
+*.log
+
+############################
+# IDE
+############################
+
+.vscode/
+.idea/
+
+############################
+# Misc
+############################
+
+*.tmp
+*.bak
+*.swp
