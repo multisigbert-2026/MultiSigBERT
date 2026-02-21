@@ -491,7 +491,7 @@ def run_global_data_filtering(
     if verbose:
         print(f"Average number of reports per patient: {mean_reports_per_id}")
         print(f"Total number of valid patients: {df_all['ID'].nunique()}")
-        print(f"Total number of deceased patients: {nbr_deces} ({proportion_deces:.1%})")
+        print(f"Total number of deceased patients: {nbr_deces} ({proportion_deces/100:.1%})")
         print(f"Minimum time difference between reports after filtering: {min_days_difference} days")
         print(f"Number of patients removed during cleaning: {nbr_id_removed}")
 
