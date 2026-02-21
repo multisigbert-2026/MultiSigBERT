@@ -58,13 +58,6 @@ models/*
 *.ckpt
 *.onnx
 
-############################
-# Results / Outputs
-############################
-
-results/*
-!results/README.md
-
 *.svg
 
 ############################
