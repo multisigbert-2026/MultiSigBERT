@@ -433,7 +433,7 @@ def signature_extract0(
     return signature_df, nbr_sig, nbr_levy
 
 
-def signature_extract(
+def signature_extract2025(
     df_OG,
     order=3,
     use_log=False,
@@ -638,5 +638,149 @@ def signature_extract(
     signature_df = pd.DataFrame(signature_results)
     cols = [var_patient] + [col for col in signature_df.columns if col != var_patient]
     signature_df = signature_df[cols]
+
+    return signature_df, nbr_sig, nbr_levy
+
+
+
+def signature_extract(
+    df_OG,
+    order=2,
+    var_temp="timestamp",
+    var_patient="ID",
+    var_embd="embeddings",
+    var_struct_list=None,
+    interpolation_type=None,
+    use_log=False,
+    use_mat_Levy=False,
+    apply_lead_lag=False,
+    verbose=True
+):
+    """
+    Compute path-signature coefficients from longitudinal patient data.
+
+    Automatically reinjects survival columns ('DEATH_L', 'R')
+    if they exist in the input dataframe.
+    """
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    import iisignature
+
+    df = df_OG.copy()
+
+    # --------------------------------------------------
+    # Detect survival columns if present
+    # --------------------------------------------------
+    survival_cols = []
+    if "DEATH_L" in df.columns:
+        survival_cols.append("DEATH_L")
+    if "R" in df.columns:
+        survival_cols.append("R")
+
+    # --------------------------------------------------
+    # Expand embeddings if provided
+    # --------------------------------------------------
+    embedding_dim = 0
+    emb_cols = []
+
+    if var_embd is not None:
+        embedding_dim = len(df[var_embd].iloc[0])
+        emb_cols = [f"emb_{i}" for i in range(embedding_dim)]
+
+        emb_array = np.vstack(df[var_embd].values)
+        emb_df = pd.DataFrame(emb_array, columns=emb_cols, index=df.index)
+        df = pd.concat([df, emb_df], axis=1)
+
+    # --------------------------------------------------
+    # Structured variables handling
+    # --------------------------------------------------
+    struct_cols = []
+
+    if var_struct_list is not None:
+        missing = [c for c in var_struct_list if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing structured columns: {missing}")
+
+        df[var_struct_list] = df[var_struct_list].apply(
+            pd.to_numeric, errors="coerce"
+        )
+
+        if interpolation_type == "linear":
+            df = df.sort_values([var_patient, var_temp])
+            df[var_struct_list] = (
+                df.groupby(var_patient)[var_struct_list]
+                  .apply(lambda g: g.interpolate().bfill().ffill())
+                  .reset_index(level=0, drop=True)
+            )
+        elif interpolation_type == "zeros":
+            df[var_struct_list] = df[var_struct_list].fillna(0.0)
+        elif interpolation_type is not None:
+            raise ValueError(f"Unknown interpolation_type: {interpolation_type}")
+
+        scaler = StandardScaler()
+        df[var_struct_list] = scaler.fit_transform(df[var_struct_list])
+
+        struct_cols = var_struct_list
+
+    # --------------------------------------------------
+    # Path dimensionality
+    # --------------------------------------------------
+    n_components = 1 + embedding_dim + len(struct_cols)
+
+    if use_log:
+        nbr_sig = iisignature.logsiglength(n_components, order)
+    else:
+        nbr_sig = iisignature.siglength(n_components, order)
+
+    nbr_sig_order2 = iisignature.siglength(n_components, 2)
+    nbr_levy = nbr_sig_order2 - (2 * n_components)
+
+    if verbose:
+        print(f"Path dimension: {n_components}")
+        print(f"Signature components (order {order}): {nbr_sig}")
+        if use_mat_Levy:
+            print(f"Levy components: {nbr_levy}")
+
+    # --------------------------------------------------
+    # Signature computation
+    # --------------------------------------------------
+    results = []
+
+    for pid, group in df.groupby(var_patient):
+
+        group = group.sort_values(var_temp)
+
+        path_cols = [var_temp] + emb_cols + struct_cols
+        path = group[path_cols].values.astype(np.float64)
+
+        if path.shape[1] > 256:
+            raise ValueError("Path dimensionality exceeds 256.")
+
+        # Add zero start point
+        path = np.vstack([np.zeros((1, path.shape[1])), path])
+
+        signature = calculate_signature(
+            path,
+            order=order,
+            use_Levy=use_mat_Levy,
+            use_log=use_log,
+            apply_lead_lag=apply_lead_lag
+        )
+
+        row = {f"sig_{i+1}": val for i, val in enumerate(signature)}
+        row[var_patient] = pid
+
+        for col in survival_cols:
+            row[col] = group[col].iloc[-1]
+
+        results.append(row)
+
+    signature_df = pd.DataFrame(results)
+
+    # Ensure ID first
+    ordered_cols = [var_patient] + [c for c in signature_df.columns if c != var_patient]
+    signature_df = signature_df[ordered_cols]
 
     return signature_df, nbr_sig, nbr_levy

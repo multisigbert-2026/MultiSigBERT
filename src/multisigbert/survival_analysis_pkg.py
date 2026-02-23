@@ -126,14 +126,16 @@ class CustomOneHotEncoder(BaseEstimator, TransformerMixin):
 
 def preprocess_cox(
     df,
-    var_DEATH='DEATH',
+    var_DEATH='DEATH_L',
     date_death="date_death",
     debut_etude="date_start",
     fin_etude="date_end",
     var_id="ID",
     return_id=False,
     var_known=None,
-    retire_duration_known=False
+    retire_duration_known=False,
+    compute_duree = False,
+    var_duree_OG = 'R'
 ):
     """
     Prepares the input DataFrame for Cox model training by computing event durations,
@@ -159,6 +161,8 @@ def preprocess_cox(
         Name of the column indicating the known observation window (used to truncate duration).
     retire_duration_known : bool, default=False
         If True, subtracts 'duration_known' from 'duree' to focus on prediction beyond last known data.
+    compute_duree : bool, default=False
+        If True, compute duration in the study from first date to last known.
 
     Returns
     -------
@@ -176,18 +180,22 @@ def preprocess_cox(
             print(f"Converting '{col}' to datetime format...")
             df[col] = pd.to_datetime(df[col])
 
-    # Compute duration (duree): from start to death if available, else to end of follow-up
-    df['duree'] = np.where(
-        df[date_death].notna(),
-        (df[date_death] - df[debut_etude]).dt.days,
-        (df[fin_etude] - df[debut_etude]).dt.days
-    )
+    if compute_duree:
+        var_duree_name = 'duree'
+        # Compute duration (duree): from start to death if available, else to end of follow-up
+        df[var_duree_name] = np.where(
+            df[date_death].notna(),
+            (df[date_death] - df[debut_etude]).dt.days,
+            (df[fin_etude] - df[debut_etude]).dt.days
+        )
+    else:
+        var_duree_name = var_duree_OG
 
     # Optionally subtract the known observation window from duration
     if retire_duration_known and var_known is not None and var_known in df.columns:
         print("\n--- Duration Truncation Based on Known Observation Window ---")
         n_patients_before = df[var_id].nunique()
-        mean_known_duration = df.groupby(var_id)['duree'].max().mean()
+        mean_known_duration = df.groupby(var_id)[var_duree_name].max().mean()
         print(f"Number of patients before duration cut: {n_patients_before}")
         print(f"Mean duration in study per patient: {mean_known_duration:.2f} days")
 
@@ -197,11 +205,11 @@ def preprocess_cox(
                 print(f"Warning: duplicated column '{var_known}' detected — removing duplicates.")
                 df = df.loc[:, ~df.columns.duplicated()]
 
-        df['duree'] = df['duree'] - df[var_known].values
-        df = df[df['duree'] >= 0]
+        df[var_duree_name] = df[var_duree_name] - df[var_known].values
+        df = df[df[var_duree_name] >= 0]
 
         n_patients_after = df[var_id].nunique()
-        mean_pred_duration = df.groupby(var_id)['duree'].max().mean()
+        mean_pred_duration = df.groupby(var_id)[var_duree_name].max().mean()
         print(f"Number of patients after duration cut: {n_patients_after}")
         print(f"Mean predicted duration per patient: {mean_pred_duration:.2f} days")
 
@@ -209,13 +217,13 @@ def preprocess_cox(
     features = [col for col in df.columns if col.startswith('sig_')]
 
     # Drop rows with missing values in key columns
-    df_clean = df.dropna(subset=['duree', var_DEATH] + features)
+    df_clean = df.dropna(subset=[var_duree_name, var_DEATH] + features)
 
     # Filter out negative durations
-    df_clean = df_clean[df_clean['duree'] >= 0]
+    df_clean = df_clean[df_clean[var_duree_name] >= 0]
 
     # Build final filtered DataFrame
-    cols = [var_id, 'duree', var_DEATH] + features
+    cols = [var_id, var_duree_name, var_DEATH] + features
     if var_known is not None and var_known in df.columns:
         cols.insert(3, var_known)
     df_filtered = df_clean[cols]
@@ -1010,3 +1018,6 @@ def skglm_datatest(
         df_survival_test['probability_survival'] = 1 - df_survival_test['probability_death']
 
     return df_survival_test, cindex_test, Xtest, ytest
+
+
+

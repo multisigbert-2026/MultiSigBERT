@@ -286,6 +286,9 @@ def process_and_export_embeddings(
 
 
 
+
+
+
 ########################################################################################
 #                                                                                      #
 #                                                                                      #
@@ -500,6 +503,8 @@ def run_global_data_filtering(
 
 
 
+
+
 ########################################################################################
 #                                                                                      #
 #                                                                                      #
@@ -583,7 +588,55 @@ def compute_embd(df, tokenizer, model, device, var_target="text"):
 
 
 
-    
+
+
+
+def convert_embeddings_column(df: pd.DataFrame,
+                              var_emb: str = "embeddings",
+                              verbose: bool = True) -> pd.DataFrame:
+    """
+    Convert a column containing string-encoded or list embeddings
+    into NumPy float arrays.
+
+    The function safely parses strings such as
+    "[ 0.12  -0.03  1.4e-02 ... ]" into np.ndarray(dtype=float).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe.
+    var_emb : str
+        Name of the embeddings column.
+    verbose : bool
+        Whether to display progress bar.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with embeddings converted to np.ndarray(float).
+    """
+
+    iterator = tqdm(df.index, desc="Converting embeddings") if verbose else df.index
+
+    for idx in iterator:
+        val = df.at[idx, var_emb]
+
+        # Case 1: already a list or ndarray
+        if isinstance(val, (list, np.ndarray)):
+            df.at[idx, var_emb] = np.asarray(val, dtype=float)
+
+        # Case 2: string representation of array
+        elif isinstance(val, str):
+            cleaned = val.strip().replace("\n", " ")
+            cleaned = cleaned.replace("[", "").replace("]", "")
+            df.at[idx, var_emb] = np.fromstring(cleaned, sep=" ", dtype=float)
+
+        else:
+            raise TypeError(f"Unsupported type in row {idx}: {type(val)}")
+
+    return df
+
+
 
 ########################################################################################
 #                                                                                      #
@@ -1302,7 +1355,6 @@ def make_train_test(
             print(f"Number of unique patients in test group {i}: {group[var_id].nunique()}")
 
     return df_train_new, test_groups
-
 
 
 
@@ -2841,3 +2893,103 @@ def define_landmark_cohort(df: pd.DataFrame,
         print(f"  → Landmark events computed: DEATH_L sum = {df_L['DEATH_L'].sum()}.")
 
     return df_L, patients_in_study, df_gamma
+
+
+
+
+# UPDATE 2026
+
+
+
+
+def prep_signature_cox(
+    df_OG,
+    order_sign=2,
+    use_log=False,
+    use_mat_Levy=False,
+    print_progress=False,
+    var_id="ID",
+    var_embd="embeddings",
+    var_start="date_start",
+    var_death="DEATH_L",
+    var_duration="R",
+    var_time="time",
+    var_event="event",
+    interpolation_type=None,
+    var_struct_seq_list_OG=None,
+    verbose=True
+):
+    """
+    Prepare Cox-ready data using path-signature features extracted
+    from sequential embeddings (landmark setting).
+    """
+
+    import time
+    start = time.time()
+
+    df = df_OG.copy()
+
+    # ------------------------------------------------------------------
+    # 1. Time normalization
+    # ------------------------------------------------------------------
+    df_time = preprocess_time(df)
+
+    if print_progress:
+        print("Time normalization completed.")
+
+    # ------------------------------------------------------------------
+    # 2. Signature extraction (landmark version)
+    # ------------------------------------------------------------------
+    df_sign, nbr_sig, nbr_levy = signature_extract(
+        df_time,
+        order=order_sign,
+        var_embd=var_embd,
+        use_log=use_log,
+        use_mat_Levy=use_mat_Levy,
+        interpolation_type=interpolation_type,
+        var_struct_list=var_struct_seq_list_OG,
+        verbose=verbose
+    )
+
+    if print_progress:
+        print("Signature extraction completed.")
+
+    # ------------------------------------------------------------------
+    # 3. Signature preprocessing
+    # ------------------------------------------------------------------
+    df_sign = preprocess_sign(df_sign, retire_small=False, return_id=False, verbose=False)
+
+    # ------------------------------------------------------------------
+    # 4. Prepare Cox-compatible dataset
+    # ------------------------------------------------------------------
+    df_cox, features_name, id_list = preprocess_cox(
+        df_sign,
+        debut_etude=var_start,
+        return_id=True,
+        compute_duree = False
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Extract survival matrix
+    # ------------------------------------------------------------------
+    Xt, y, id_list = feat_event_extract(
+        df_cox,
+        features=features_name,
+        var_id=var_id,
+        var_DEATH=var_death,
+        var_duree=var_duration
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Construct df_study
+    # ------------------------------------------------------------------
+    df_study = pd.DataFrame(Xt, columns=features_name)
+    df_study.insert(0, var_id, id_list)
+    df_study[var_event] = y[var_event].astype(bool)
+    df_study[var_time] = y[var_time].astype(float)
+
+    if print_progress:
+        print(f"Preprocessing completed in {time.time() - start:.2f} seconds.")
+        print(f"Final dataset shape: {df_study.shape}")
+
+    return Xt, y, features_name, nbr_sig, nbr_levy, id_list, df_study
