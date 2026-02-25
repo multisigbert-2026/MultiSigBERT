@@ -932,6 +932,31 @@ def global_cox_train(
 
 
 
+def _safe_c_index_from_survival_df(
+    df_survival: pd.DataFrame,
+    var_event: str = "event",
+    var_time: str = "time",
+    var_risk: str = "risk_score"
+) -> float:
+    """
+    Safely compute the concordance index.
+
+    Returns
+    -------
+    float
+        C-index value, or np.nan if no admissible pairs exist.
+    """
+    try:
+        return concordance_index(
+            df_survival[var_time],
+            -df_survival[var_risk],
+            df_survival[var_event]
+        )
+    except ZeroDivisionError:
+        print("Warning: No admissible pairs in this test fold. Returning NaN C-index.")
+        return np.nan
+
+
 def skglm_datatest(
     Xt_test: pd.DataFrame,
     y_test: pd.DataFrame,
@@ -947,75 +972,62 @@ def skglm_datatest(
     """
     Apply a trained Cox model to a test dataset and compute the C-index.
 
-    Parameters
-    ----------
-    Xt_test : pd.DataFrame
-        Covariate matrix for the test set.
-    y_test : pd.DataFrame
-        DataFrame containing 'event' and 'time' columns for the test set.
-    w_sk : np.ndarray
-        Coefficients from the trained skglm model.
-    cph : lifelines.CoxPHFitter
-        Trained Cox model used to generate survival curves.
-    id_list_test : list
-        List of patient IDs for the test dataset.
-    plot_curves : bool, default=True
-        If True, plot individual survival curves using the fitted model.
-    print_all : bool, default=False
-        If True, plot survival curves for all patients.
-    indices_selected : list, default=range(20)
-        Indices of patients to plot if `print_all` is False.
-    use_sig_risk_score : bool, default=False
-        If True, apply a sigmoid transformation to risk scores for probability estimation.
-    id_list : list or None
-        Deprecated. Use `id_list_test` instead.
-
     Returns
     -------
     tuple
         - DataFrame with survival predictions and risk scores.
-        - Concordance index on the test set.
-        - Processed feature matrix for test set.
-        - Processed target array for test set.
+        - Concordance index on the test set (NaN if undefined).
+        - Processed feature matrix.
+        - Processed target array.
     """
+
     # Preprocess test data
     Xtest, ytest = preprocess_skglm(Xt_test, y_test)
 
-    event_test = y_test['event'].astype(float)
-    time_test = y_test['time']
+    event_test = y_test["event"].astype(float)
+    time_test = y_test["time"]
     risk_scores_test = np.dot(Xtest, w_sk)
 
     df_survival_test = pd.DataFrame({
-        'event': event_test,
-        'time': time_test,
-        'risk_score': risk_scores_test
+        "event": event_test,
+        "time": time_test,
+        "risk_score": risk_scores_test
     })
 
-    # Optionally attach patient IDs
-    if id_list_test is not None and len(id_list_test) == len(df_survival_test):
-        df_survival_test['ID'] = id_list_test
-    elif id_list_test is not None and len(id_list_test) != len(df_survival_test):
-        raise ValueError("Length mismatch: 'df_survival_test' and 'id_list_test' must match.")
+    # Attach patient IDs
+    if id_list_test is not None:
+        if len(id_list_test) != len(df_survival_test):
+            raise ValueError("Length mismatch: 'df_survival_test' and 'id_list_test' must match.")
+        df_survival_test["ID"] = id_list_test
 
-    # Plot survival curves if requested
+    # Plot survival curves
     if plot_curves:
-        skglm_plt_surv_curves(cph, df_survival_test, print_all=print_all, indices_selected=indices_selected)
+        skglm_plt_surv_curves(
+            cph,
+            df_survival_test,
+            print_all=print_all,
+            indices_selected=indices_selected
+        )
 
     print("---")
-    print("NaNs in risk_score:", df_survival_test['risk_score'].isna().sum())
-    print("Infs in risk_score:", np.isinf(df_survival_test['risk_score']).sum())
+    print("NaNs in risk_score:", df_survival_test["risk_score"].isna().sum())
+    print("Infs in risk_score:", np.isinf(df_survival_test["risk_score"]).sum())
 
-    # Remove rows with NaN or inf in risk_score
-    df_survival_test = df_survival_test[np.isfinite(df_survival_test['risk_score'])].copy()
-    
-    # Compute C-index on the test set
-    cindex_test = c_index_skglm(df_survival_test)
-    print(f"Concordance index on test set: {cindex_test:.3f}")
+    # Remove invalid risk scores
+    df_survival_test = df_survival_test[np.isfinite(df_survival_test["risk_score"])].copy()
 
-    # Optional sigmoid transformation of risk score
+    # Safe C-index computation
+    cindex_test = _safe_c_index_from_survival_df(df_survival_test)
+
+    if np.isnan(cindex_test):
+        print("Concordance index on test set: NaN (no admissible pairs)")
+    else:
+        print(f"Concordance index on test set: {cindex_test:.3f}")
+
+    # Optional sigmoid transformation
     if use_sig_risk_score:
-        df_survival_test['probability_death'] = 1 / (1 + np.exp(-df_survival_test['risk_score']))
-        df_survival_test['probability_survival'] = 1 - df_survival_test['probability_death']
+        df_survival_test["probability_death"] = 1 / (1 + np.exp(-df_survival_test["risk_score"]))
+        df_survival_test["probability_survival"] = 1 - df_survival_test["probability_death"]
 
     return df_survival_test, cindex_test, Xtest, ytest
 

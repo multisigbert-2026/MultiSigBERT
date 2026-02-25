@@ -745,17 +745,18 @@ def prep_import(
         print("----- Time normalization completed")
 
     # Signature extraction
-    df_sign, nbr_sig, nbr_levy = signature_extract(
+    df_sign, nbr_sig, nbr_levy =     signature_extract(
         df_time,
         order=order_sign,
         var_embd=var_embd,
+        var_struct_list=var_struct_seq_list_OG,
+        interpolation_type=interpolation_type,
         use_log=use_log,
         use_mat_Levy=use_mat_Levy,
-        interpolation_type = interpolation_type,
-        var_structurees_list_OG=var_struct_seq_list_OG,
-        use_missing_encoding=use_missing_encoding,
+        apply_lead_lag=False,
         verbose=verbose
     )
+
     if print_progress:
         print("*" * 30)
         print("----- Signature extraction completed")
@@ -1747,7 +1748,7 @@ def cleaning_data(
 
 
 
-def global_sigbert_process(
+def global_sigbert_process2025(
     max_reports,
     df_all,
     df_train_new_OG,
@@ -1819,6 +1820,8 @@ def global_sigbert_process(
     Xt, y, features_name, nbr_sig, nbr_levy, id_list_train_V2, df_study_train = prep_import(
         df_train,
         t_pred=None,
+        var_death = var_death,
+        var_duration = var_duration,
         order_sign=order_sign,
         interpolation_type = interpolation_type,
         var_struct_seq_list_OG=var_struct_seq_list,
@@ -1835,7 +1838,13 @@ def global_sigbert_process(
             df_Xt = pd.DataFrame(Xt)
             df_temp = pd.concat([df_sig, df_Xt], axis=1)
             df_merge = df_temp.merge(df_matrix_covar, on=var_id, how='left')
-            
+            n_sig_features = df_Xt.shape[1]
+            n_total_features = df_merge.shape[1] - 1  # exclude var_id
+            n_static_covariates = n_total_features - n_sig_features
+            print(
+                f"Static covariates added: {n_static_covariates} "
+                f"(total features: {n_total_features}, signature features: {n_sig_features})"
+            )            
             id_list_training = list(df_merge[var_id])
             print(f"Number of individuals in training: {len(id_list_training)}")
             
@@ -1867,6 +1876,8 @@ def global_sigbert_process(
         Xt_test, y_test, _, _, _, id_list_test_i, df_study_test_i = prep_import(
             df_test,
             t_pred=None,
+            var_death = var_death,
+            var_duration = var_duration,
             order_sign=order_sign,
             interpolation_type = interpolation_type,
             var_struct_seq_list_OG=var_struct_seq_list,
@@ -1942,6 +1953,522 @@ def global_sigbert_process(
 
 
 
+
+
+
+def _compute_dataset_stats(df_train_new, df_test_new, df_last_obs, df_last_obs_test_all, var_id, var_crea, var_death, var_duration):
+    """
+    Compute dataset-level descriptive statistics used for reporting.
+    """
+    df_everyone = pd.concat([df_train_new, df_test_new], axis=0)
+
+    total_unique_patients = df_everyone[var_id].nunique()
+    total_number_of_reports = len(df_everyone)
+    mean_reports_per_patient = df_everyone.groupby(var_id).size().mean()
+
+    total_deceased_patients = df_everyone[df_everyone[var_death] == 1][var_id].nunique()
+    total_censored_patients = df_everyone[df_everyone[var_death] == 0][var_id].nunique()
+
+    df_all_last = pd.concat([df_last_obs, df_last_obs_test_all])
+    mean_study_time = float(np.mean(df_all_last[var_duration]))
+    std_study_time = float(np.std(df_all_last[var_duration]))
+
+    return {
+        "total_unique_patients": total_unique_patients,
+        "total_number_of_reports": total_number_of_reports,
+        "mean_reports_per_patient": mean_reports_per_patient,
+        "total_deceased_patients": total_deceased_patients,
+        "total_censored_patients": total_censored_patients,
+        "mean_study_time": mean_study_time,
+        "std_study_time": std_study_time,
+    }
+
+
+def _build_test_conformed_sets(test_groups, var_id="ID", var_T="duration", verbose=False):
+    """
+    Apply make_df_conform to each test split and return concatenated structures.
+    """
+    df_test_new_list = []
+    df_test_last_obs_list = []
+    id_list_test_list = []
+
+    for df_test in test_groups:
+        df_test_new_i, df_test_last_obs_i, id_list_test_i = make_df_conform(
+            df_test, var_T=var_T, verbose=verbose
+        )
+        df_test_new_list.append(df_test_new_i)
+        df_test_last_obs_list.append(df_test_last_obs_i)
+        id_list_test_list.append(id_list_test_i)
+
+    df_test_new_all = pd.concat(df_test_new_list, axis=0)
+    df_last_obs_test_all = pd.concat(df_test_last_obs_list, axis=0)
+
+    total_test = df_last_obs_test_all[var_id].nunique()
+    print(f"Total number of individuals in the validation set: {total_test}\n")
+
+    return df_test_new_list, df_test_new_all, df_last_obs_test_all, id_list_test_list
+
+
+def _append_static_covariates(
+    Xt,
+    id_list,
+    df_matrix_covar,
+    var_id="ID",
+    enforce_cluster_categorical=True,
+    drop_first=True,
+    verbose=True
+):
+    """
+    Append static covariates to an existing design matrix Xt.
+
+    This function merges patient-level covariates (df_matrix_covar) by var_id and
+    concatenates them to Xt. Categorical covariates are one-hot encoded with
+    drop_first to avoid perfect multicollinearity in Cox models.
+
+    Notes
+    -----
+    - If 'cluster_spectral' is present, it is enforced as categorical even if stored
+      as integers (0/1/2).
+    - Returns the updated Xt and the aligned id list.
+    """
+    if df_matrix_covar is None:
+        raise ValueError("`use_other_covar=True` but `df_matrix_covar` is None.")
+
+    df_ids = pd.DataFrame({var_id: id_list})
+    df_X = pd.DataFrame(Xt)
+    df_temp = pd.concat([df_ids, df_X], axis=1)
+
+    df_merge = df_temp.merge(df_matrix_covar, on=var_id, how="left")
+
+    if enforce_cluster_categorical and "cluster_spectral" in df_merge.columns:
+        df_merge["cluster_spectral"] = df_merge["cluster_spectral"].astype("category")
+
+    # Identify static covariates (everything except var_id and signature columns)
+    n_sig_features = df_X.shape[1]
+    static_cols = list(df_merge.columns[(1 + n_sig_features):])
+
+    # Choose columns to one-hot encode:
+    # - all non-numeric static covariates
+    # - plus cluster_spectral if present (even if numeric)
+    cat_cols = [
+        c for c in static_cols
+        if (not pd.api.types.is_numeric_dtype(df_merge[c])) or (c == "cluster_spectral")
+    ]
+
+    if len(cat_cols) > 0:
+        df_merge = pd.get_dummies(
+            df_merge,
+            columns=cat_cols,
+            drop_first=drop_first,
+            dummy_na=False
+        )
+
+    n_total_features = df_merge.shape[1] - 1  # exclude var_id
+    n_static_covariates = n_total_features - n_sig_features
+
+    if verbose:
+        print(
+            f"Static covariates added: {n_static_covariates} "
+            f"(total features: {n_total_features}, signature features: {n_sig_features})"
+        )
+
+    id_list_aligned = list(df_merge[var_id])
+    if verbose:
+        print(f"Number of individuals in design matrix: {len(id_list_aligned)}")
+
+    df_merge = df_merge.drop(columns=[var_id])
+    
+    # Ensure strictly numeric float64 matrix for skglm / numba
+    Xt_aug = df_merge.astype(np.float64).to_numpy()
+    
+    return Xt_aug, id_list_aligned
+
+
+def _fit_cox_model(
+    Xt,
+    y,
+    id_list_training,
+    learning_cox_map="sk_cox",
+    lambda_l1_CV=0.7
+):
+    """
+    Train a penalized Cox model on Xt and return fitted objects.
+    """
+    print(" --------------- Linear LASSO training --------------- ")
+    cph, df_survival, w_sk, scores, X, y_cox, c_index_train, log_likelihood, _ = global_cox_train(
+        Xt,
+        y,
+        id_list_train=id_list_training,
+        learning_cox_map=learning_cox_map,
+        lambda_l1_CV=lambda_l1_CV
+    )
+    print(" ---------------  --------------- ")
+    return cph, df_survival, w_sk, scores, X, y_cox, c_index_train, log_likelihood
+
+
+def _evaluate_on_test_groups(
+    test_groups,
+    R_comp,
+    w_sk,
+    cph,
+    df_matrix_covar=None,
+    use_other_covar=False,
+    use_standard_scale=False,
+    scaler=None,
+    order_sign=2,
+    interpolation_type="linear",
+    var_id="ID",
+    var_embd="embeddings",
+    var_death="DEATH",
+    var_duration="duration",
+    var_struct_seq_list=None,
+    use_mat_Levy=False,
+    print_progress=False,
+    train_feature_columns=None
+):
+    """
+    Evaluate the trained Cox model on each test split and return per-split outputs.
+    """
+    c_index_test_list = []
+    df_survival_test_list = []
+    df_study_all_test = pd.DataFrame()
+
+    for i, df_test_new in enumerate(test_groups, start=1):
+
+        df_test_proj = apply_linear_projection(df_test_new, R_comp, var_embd=var_embd)
+
+        Xt_test, y_test, _, _, _, id_list_test_i, df_study_test_i = prep_import(
+            df_test_proj,
+            t_pred=None,
+            var_death=var_death,
+            var_duration=var_duration,
+            order_sign=order_sign,
+            interpolation_type=interpolation_type,
+            var_struct_seq_list_OG=var_struct_seq_list,
+            use_mat_Levy=use_mat_Levy,
+            print_progress=print_progress
+        )
+
+        df_study_all_test = pd.concat([df_study_all_test, df_study_test_i], ignore_index=True)
+
+        if use_other_covar:
+            df_X_test, id_list_test_i = _append_static_covariates_df(
+                Xt=Xt_test,
+                id_list=id_list_test_i,
+                df_matrix_covar=df_matrix_covar,
+                var_id=var_id,
+                enforce_cluster_categorical=True,
+                drop_first=True,
+                verbose=False
+            )
+
+            # Align test columns to training columns
+            df_X_test = df_X_test.reindex(columns=train_feature_columns, fill_value=0)
+        
+            Xt_test = np.ascontiguousarray(df_X_test.to_numpy(dtype=np.float64))
+            
+        if use_standard_scale:
+            if scaler is None:
+                raise ValueError("`use_standard_scale=True` but `scaler` is None.")
+            Xt_test = scaler.transform(Xt_test)
+
+        print(f"\n--- Test Case {i} ---")
+
+        df_survival_test, c_index_test, Xtest, ytest = skglm_datatest(
+            Xt_test,
+            y_test,
+            w_sk,
+            cph,
+            id_list_test_i,
+            plot_curves=False
+        )
+
+        c_index_test_list.append(c_index_test)
+        df_survival_test_list.append(df_survival_test)
+
+        print("--- ---")
+
+    return c_index_test_list, df_survival_test_list, df_study_all_test
+
+
+
+def _align_design_matrices(train_X, test_X):
+    """
+    Align test design matrix to the training design matrix columns.
+
+    This is mandatory when static covariates are one-hot encoded (or when
+    structured sequences induce missing categories in a fold), because
+    train/test may not generate identical dummy columns.
+
+    Parameters
+    ----------
+    train_X : pd.DataFrame
+        Training design matrix as a DataFrame (columns = features).
+    test_X : pd.DataFrame
+        Test design matrix as a DataFrame (columns = features).
+
+    Returns
+    -------
+    test_X_aligned : pd.DataFrame
+        Test matrix reindexed to train columns (missing filled with 0).
+    """
+    return test_X.reindex(columns=train_X.columns, fill_value=0)
+
+
+def _append_static_covariates_df(
+    Xt,
+    id_list,
+    df_matrix_covar,
+    var_id="ID",
+    enforce_cluster_categorical=True,
+    drop_first=True,
+    verbose=True
+):
+    """
+    Same as _append_static_covariates but returns a DataFrame with feature names.
+
+    This enables strict train/test alignment after one-hot encoding.
+    """
+    if df_matrix_covar is None:
+        raise ValueError("`use_other_covar=True` but `df_matrix_covar` is None.")
+
+    df_ids = pd.DataFrame({var_id: id_list})
+    df_X = pd.DataFrame(Xt)
+    df_temp = pd.concat([df_ids, df_X], axis=1)
+
+    df_merge = df_temp.merge(df_matrix_covar, on=var_id, how="left")
+
+    if enforce_cluster_categorical and "cluster_spectral" in df_merge.columns:
+        df_merge["cluster_spectral"] = df_merge["cluster_spectral"].astype("category")
+
+    n_sig_features = df_X.shape[1]
+    static_cols = list(df_merge.columns[(1 + n_sig_features):])
+
+    cat_cols = [
+        c for c in static_cols
+        if (not pd.api.types.is_numeric_dtype(df_merge[c])) or (c == "cluster_spectral")
+    ]
+
+    if len(cat_cols) > 0:
+        df_merge = pd.get_dummies(
+            df_merge,
+            columns=cat_cols,
+            drop_first=drop_first,
+            dummy_na=False
+        )
+
+    n_total_features = df_merge.shape[1] - 1
+    n_static_covariates = n_total_features - n_sig_features
+
+    if verbose:
+        print(
+            f"Static covariates added: {n_static_covariates} "
+            f"(total features: {n_total_features}, signature features: {n_sig_features})"
+        )
+
+    id_list_aligned = list(df_merge[var_id])
+    if verbose:
+        print(f"Number of individuals in design matrix: {len(id_list_aligned)}")
+
+    df_design = df_merge.drop(columns=[var_id])
+
+    # force numeric float64 for numba/skglm
+    df_design = df_design.astype(np.float64)
+
+    return df_design, id_list_aligned
+
+
+def global_sigbert_process(
+    max_reports,
+    df_all,
+    df_train_new_OG,
+    test_groups,
+    R_comp,
+    lambda_l1_CV=0.7,
+    order_sign=2,
+    use_mat_Levy=False,
+    print_progress=False,
+    var_id="ID",
+    var_embd="embeddings",
+    var_crea="date_creation",
+    var_death="DEATH",
+    var_duration="duration",
+    learning_cox_map="sk_cox",
+    interpolation_type="linear",
+    var_struct_seq_list=None,
+    df_matrix_covar=None,
+    use_other_covar=False,
+    use_standard_scale=False,
+    id_list_training=None
+):
+    """
+    End-to-end SigBERT training/evaluation routine.
+
+    This wrapper orchestrates:
+    - conformal train/test formatting,
+    - embedding projection,
+    - signature feature extraction,
+    - optional static covariate augmentation (with categorical one-hot encoding),
+    - L1-penalized Cox training,
+    - evaluation on multiple held-out test splits.
+
+    Notes
+    -----
+    - If `cluster_spectral` is present in `df_matrix_covar`, it is always treated as
+      categorical and one-hot encoded with `drop_first=True` to prevent collinearity.
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    print(f"\n### Processing for max_reports = {max_reports} ###")
+    time_start = time.time()
+
+    df_all_quartile = df_all.sort_values(by=[var_id, var_crea]).groupby(var_id).head(max_reports)
+    std_reports = df_all_quartile.groupby(var_id)[var_crea].count().std()
+
+    # Conformal formatting: train
+    df_train_new, df_last_obs, id_list_train = make_df_conform(
+        df_train_new_OG, var_T=var_duration, verbose=False
+    )
+    total_train = df_last_obs[var_id].nunique()
+    print(f"\nTotal number of individuals in the train set: {total_train}")
+
+    # Conformal formatting: tests
+    df_test_new_list, df_test_new_all, df_last_obs_test_all, _ = _build_test_conformed_sets(
+        test_groups=test_groups,
+        var_id=var_id,
+        var_T=var_duration,
+        verbose=False
+    )
+
+    # Dataset statistics (for summary table)
+    stats = _compute_dataset_stats(
+        df_train_new=df_train_new,
+        df_test_new=df_test_new_all,
+        df_last_obs=df_last_obs,
+        df_last_obs_test_all=df_last_obs_test_all,
+        var_id=var_id,
+        var_crea=var_crea,
+        var_death=var_death,
+        var_duration=var_duration
+    )
+
+    # Projection on train
+    df_train_proj = apply_linear_projection(df_train_new, R_comp, var_embd=var_embd)
+
+    start_training = time.time()
+
+    df_study_all = pd.DataFrame()
+
+    Xt, y, features_name, nbr_sig, nbr_levy, id_list_train_V2, df_study_train = prep_import(
+        df_train_proj,
+        t_pred=None,
+        var_death=var_death,
+        var_duration=var_duration,
+        order_sign=order_sign,
+        interpolation_type=interpolation_type,
+        var_struct_seq_list_OG=var_struct_seq_list,
+        use_mat_Levy=use_mat_Levy,
+        print_progress=print_progress
+    )
+
+    df_study_all = pd.concat([df_study_all, df_study_train], ignore_index=True)
+
+    # Static covariates (train)
+    if use_other_covar:
+        df_X_train, id_list_training = _append_static_covariates_df(
+            Xt=Xt,
+            id_list=id_list_train_V2,
+            df_matrix_covar=df_matrix_covar,
+            var_id=var_id,
+            enforce_cluster_categorical=True,
+            drop_first=True,
+            verbose=True
+        )
+        train_feature_columns = df_X_train.columns
+        Xt = np.ascontiguousarray(df_X_train.to_numpy(dtype=np.float64))
+    else:
+        df_X_train = pd.DataFrame(Xt).astype(np.float64)
+        id_list_training = list(id_list_train_V2)
+
+    # Standard scaling (train)
+    scaler = None
+    if use_standard_scale:
+        scaler = StandardScaler()
+        Xt = scaler.fit_transform(Xt)
+
+    print(f"Signature feature computation took {time.time() - start_training:.2f}s\n")
+
+    # Cox training
+    cph, df_survival, w_sk, scores, X, y_cox, c_index_train, log_likelihood = _fit_cox_model(
+        Xt=Xt,
+        y=y,
+        id_list_training=id_list_training,
+        learning_cox_map=learning_cox_map,
+        lambda_l1_CV=lambda_l1_CV
+    )
+
+    # Test evaluation
+    c_index_test_list, df_survival_test_list, df_study_all_test = _evaluate_on_test_groups(
+        test_groups=df_test_new_list,
+        R_comp=R_comp,
+        w_sk=w_sk,
+        cph=cph,
+        df_matrix_covar=df_matrix_covar,
+        use_other_covar=use_other_covar,
+        use_standard_scale=use_standard_scale,
+        scaler=scaler,
+        order_sign=order_sign,
+        interpolation_type=interpolation_type,
+        var_id=var_id,
+        var_embd=var_embd,
+        var_death=var_death,
+        var_duration=var_duration,
+        var_struct_seq_list=var_struct_seq_list,
+        use_mat_Levy=use_mat_Levy,
+        print_progress=print_progress,
+        train_feature_columns=train_feature_columns
+    )
+
+    df_study_all = pd.concat([df_study_all, df_study_all_test], ignore_index=True)
+
+    c_index_test_mean = float(np.mean(c_index_test_list))
+    c_index_test_std = float(np.std(c_index_test_list, ddof=1))
+    time_end = time.time() - time_start
+
+    df_results = pd.DataFrame([{
+        "Max Reports": max_reports,
+        "Mean C-index": c_index_test_mean,
+        "Std C-index": c_index_test_std,
+        "Total Deceased Patients": stats["total_deceased_patients"],
+        "Total Censored Patients": stats["total_censored_patients"],
+        "Total Unique Patients": stats["total_unique_patients"],
+        "Total Number of Reports": stats["total_number_of_reports"],
+        "Mean Study Time (days)": np.round(stats["mean_study_time"], 3),
+        "Std Study Time (days)": np.round(stats["std_study_time"], 3),
+        "Execution Time (s)": np.round(time_end, 2),
+        "Mean Reports per Patient": np.round(stats["mean_reports_per_patient"], 3),
+        "Std Reports per Patient": np.round(std_reports, 3),
+    }])
+
+    print(f"Mean c-index (test): {c_index_test_mean:.4f}")
+    print(f"Standard deviation of c-index (test): {c_index_test_std:.4f}")
+
+    return (
+        df_results,
+        cph,
+        df_survival,
+        w_sk,
+        scores,
+        X,
+        y,
+        y_cox,
+        c_index_train,
+        c_index_test_list,
+        c_index_test_mean,
+        c_index_test_std,
+        df_survival_test_list,
+        df_study_all
+    )
 
 
 def global_sigbert_structured_process(

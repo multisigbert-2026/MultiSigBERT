@@ -1,5 +1,9 @@
 # Processed Data for SigBERT
 
+<p style="color:red;">
+Please note that, in compliance with GDPR regulations, data derived from real patient records cannot be made publicly available in this repository.
+</p>
+
 - This directory contains the processed tabular datasets used as inputs for survival prediction models. Each file typically corresponds to a set of patient reports that have been cleaned, timestamped, and encoded with sentence-level embeddings.
 - All identifiers must be fully anonymized and compliant with local data protection regulations.
 - Sentence embeddings are typically obtained from clinical narratives and are designed to preserve semantic information in a compact numerical format.

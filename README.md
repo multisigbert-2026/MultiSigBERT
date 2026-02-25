@@ -13,7 +13,7 @@ This repository is provided for reproducibility purposes under the double-blind 
 Electronic Health Records (EHR) contain heterogeneous and time-dependent information, including:
 
 - Narrative clinical reports (free-text),
-- Structured numerical variables (e.g., biomarkers, vital signs),
+- Structured numerical variables (e.g., Weight, Karnofsky Index, Blood Pressure, Pulse) at certain timepoints,
 - Static covariates (e.g., demographic or tumor characteristics).
 
 Classical survival models typically rely on static covariates and fail to exploit the geometric and sequential structure of longitudinal multimodal data.
@@ -187,4 +187,3 @@ Please see [`sklearn_patch.py`](./src/multisigbert/sklearn_param_validation_patc
 - Reported experimental results can be reproduced using appropriately formatted data.
 
 This repository is submitted anonymously for peer review.  
-For questions related to the code or reproducibility, please contact: [multisigbert@gmail.com](mailto:multisigbert@gmail.com).
