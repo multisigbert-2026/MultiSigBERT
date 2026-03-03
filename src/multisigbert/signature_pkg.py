@@ -650,7 +650,7 @@ def signature_extract(
     var_patient="ID",
     var_embd="embeddings",
     var_struct_list=None,
-    interpolation_type=None,
+    interpolation_type='linear',
     use_log=False,
     use_mat_Levy=False,
     apply_lead_lag=False,
@@ -674,8 +674,13 @@ def signature_extract(
     # Detect survival columns if present
     # --------------------------------------------------
     survival_cols = []
+    if "DEATH" in df.columns:
+        survival_cols.append("DEATH")
     if "DEATH_L" in df.columns:
         survival_cols.append("DEATH_L")
+
+    if "T_days" in df.columns:
+        survival_cols.append("T_days")
     if "R" in df.columns:
         survival_cols.append("R")
 
@@ -709,10 +714,30 @@ def signature_extract(
 
         if interpolation_type == "linear":
             df = df.sort_values([var_patient, var_temp])
-            df[var_struct_list] = (
-                df.groupby(var_patient)[var_struct_list]
-                  .apply(lambda g: g.interpolate().bfill().ffill())
-                  .reset_index(level=0, drop=True)
+        
+            def interp_one_patient(g: pd.DataFrame) -> pd.DataFrame:
+                # Interpolate using the temporal index to avoid issues with irregular timestamps
+                g = g.sort_values(var_temp).set_index(var_temp)
+        
+                # Interpolation + boundary extrapolation
+                # - limit_direction="both": fills forward and backward (including boundaries)
+                # - limit_area="outside": explicitly targets NaNs outside the internal data range
+                out = g[var_struct_list].interpolate(
+                    method="linear",
+                    limit_direction="both",
+                    limit_area="outside"
+                )
+        
+                # Safety check: if a column is entirely NaN for this patient,
+                # it will remain NaN after interpolation → replace with 0 (or another strategy)
+                out = out.fillna(0.0)
+        
+                g[var_struct_list] = out
+                return g.reset_index()
+        
+            df = (
+                df.groupby(var_patient, group_keys=False)
+                  .apply(interp_one_patient)
             )
         elif interpolation_type == "zeros":
             df[var_struct_list] = df[var_struct_list].fillna(0.0)

@@ -223,9 +223,17 @@ def preprocess_cox(
     df_clean = df_clean[df_clean[var_duree_name] >= 0]
 
     # Build final filtered DataFrame
-    cols = [var_id, var_duree_name, var_DEATH] + features
+    cols = [var_id, var_duree_name, var_DEATH]
+    
+    # Keep original T_days column if present
+    if 'T_days' in df.columns:
+        cols.append('T_days')
+    
     if var_known is not None and var_known in df.columns:
-        cols.insert(3, var_known)
+        cols.append(var_known)
+    
+    cols += features
+    
     df_filtered = df_clean[cols]
 
     # Return outputs

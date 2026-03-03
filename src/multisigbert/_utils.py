@@ -651,7 +651,7 @@ def convert_embeddings_column(df: pd.DataFrame,
 
 def prep_import(
     df_OG,
-    order_sign=3,
+    order_sign=2,
     t_pred=None,
     use_log=False,
     use_mat_Levy=False,
