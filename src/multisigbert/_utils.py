@@ -2124,11 +2124,14 @@ def _evaluate_on_test_groups(
     var_struct_seq_list=None,
     use_mat_Levy=False,
     print_progress=False,
-    train_feature_columns=None
+    train_feature_columns=None,
+    non_zero_cols=None,
+    norms_train=None
 ):
     """
     Evaluate the trained Cox model on each test split and return per-split outputs.
     """
+
     c_index_test_list = []
     df_survival_test_list = []
     df_study_all_test = pd.DataFrame()
@@ -2149,8 +2152,14 @@ def _evaluate_on_test_groups(
             print_progress=print_progress
         )
 
-        df_study_all_test = pd.concat([df_study_all_test, df_study_test_i], ignore_index=True)
+        df_study_all_test = pd.concat(
+            [df_study_all_test, df_study_test_i], 
+            ignore_index=True
+        )
 
+        # ---------------------------------------------
+        # Append static covariates if required
+        # ---------------------------------------------
         if use_other_covar:
             df_X_test, id_list_test_i = _append_static_covariates_df(
                 Xt=Xt_test,
@@ -2161,16 +2170,40 @@ def _evaluate_on_test_groups(
                 drop_first=True,
                 verbose=False
             )
+        else:
+            df_X_test = pd.DataFrame(Xt_test)
 
-            # Align test columns to training columns
-            df_X_test = df_X_test.reindex(columns=train_feature_columns, fill_value=0)
-        
-            Xt_test = np.ascontiguousarray(df_X_test.to_numpy(dtype=np.float64))
-            
+        # ---------------------------------------------
+        # Strict alignment with training feature space
+        # ---------------------------------------------
+        df_X_test = df_X_test.reindex(
+            columns=train_feature_columns,
+            fill_value=0.0
+        )
+
+        Xt_test = np.ascontiguousarray(
+            df_X_test.to_numpy(dtype=np.float64)
+        )
+
+        # ---------------------------------------------
+        # Standard scaling (if used in training)
+        # ---------------------------------------------
         if use_standard_scale:
             if scaler is None:
                 raise ValueError("`use_standard_scale=True` but `scaler` is None.")
             Xt_test = scaler.transform(Xt_test)
+
+        # ---------------------------------------------
+        # Apply SAME zero-column filtering as training
+        # ---------------------------------------------
+        if non_zero_cols is not None:
+            Xt_test = Xt_test[:, non_zero_cols]
+
+        # ---------------------------------------------
+        # Apply SAME Euclidean normalization as training
+        # ---------------------------------------------
+        if norms_train is not None:
+            Xt_test = Xt_test / norms_train
 
         print(f"\n--- Test Case {i} ---")
 
@@ -2388,7 +2421,9 @@ def global_sigbert_process(
         Xt = np.ascontiguousarray(df_X_train.to_numpy(dtype=np.float64))
     else:
         df_X_train = pd.DataFrame(Xt).astype(np.float64)
+        train_feature_columns = df_X_train.columns   # <-- ADD THIS
         id_list_training = list(id_list_train_V2)
+        Xt = np.ascontiguousarray(df_X_train.to_numpy(dtype=np.float64))  # <-- recommended
 
     # Standard scaling (train)
     scaler = None
@@ -2396,6 +2431,20 @@ def global_sigbert_process(
         scaler = StandardScaler()
         Xt = scaler.fit_transform(Xt)
 
+    # Normalize each column of Xt to have unit Euclidean norm (train)
+    norms_train = np.linalg.norm(Xt, axis=0)
+    non_zero_cols = norms_train > 0
+    
+    Xt = Xt[:, non_zero_cols]
+    norms_train = norms_train[non_zero_cols]
+    
+    # Keep only surviving feature names (critical)
+    train_feature_columns = train_feature_columns[non_zero_cols]
+    
+    Xt = Xt / norms_train
+    # print( "\n\n\n --------- Each column of Xt to have unit Euclidean norm. --------- \n\n\n")
+
+    
     print(f"Signature feature computation took {time.time() - start_training:.2f}s\n")
 
     # Cox training
