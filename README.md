@@ -2,7 +2,7 @@
 
 This repository contains the anonymous implementation of **MultiSigBERT**, a multimodal and temporal survival analysis framework designed for modeling time-to-event outcomes from heterogeneous longitudinal clinical data.
 
-MultiSigBERT combines multimodal embedding extraction, path signature theory, graph-based clustering (Minimum Spanning Tree + spectral methods), and sparse Cox modeling to identify progression phenotypes and estimate patient-specific survival risk.
+MultiSigBERT combines multimodal embedding extraction, path signature theory, and sparse Cox modeling to estimate patient-specific survival risk from longitudinal clinical data.
 
 This repository is provided for reproducibility purposes under the double-blind review policy of ECML PKDD 2026.
 
@@ -18,7 +18,7 @@ Electronic Health Records (EHR) contain heterogeneous and time-dependent informa
 
 Classical survival models typically rely on static covariates and fail to exploit the geometric and sequential structure of longitudinal multimodal data.
 
-**MultiSigBERT** addresses this limitation through a unified five-stage pipeline:
+**MultiSigBERT** addresses this limitation through a unified four-stage pipeline:
 
 1. **Multimodal Embedding and Compression**  
    Each modality (textual and structured time-dependent variables) is transformed into vector representations.  
@@ -30,15 +30,10 @@ Classical survival models typically rely on static covariates and fail to exploi
 2. **Signature-Based Temporal Encoding**  
    The chronological multimodal trajectory is encoded using the path signature transform, producing fixed-dimensional vectors that capture higher-order temporal interactions.
 
-3. **Graph Construction and MST-Based Clustering**  
-   Patients are embedded in the learned signature space.  
-   A k-nearest neighbor graph is constructed, and its Minimum Spanning Tree (MST) is used to characterize the geometric backbone of inter-patient similarity.  
-   Spectral clustering is then applied to identify latent progression phenotypes.
+3. **Survival Modeling**  
+   A LASSO-regularized Cox proportional hazards model is trained on the signature features.
 
-4. **Cluster-Specific Survival Modeling**  
-   Within each identified subgroup, a LASSO-regularized Cox proportional hazards model is trained on signature features.
-
-5. **Performance Evaluation**  
+4. **Performance Evaluation**
    Model performance is assessed using discrimination and calibration metrics (C-index, time-dependent AUC, Brier Score, Integrated Brier Score).
 
 
@@ -70,7 +65,6 @@ MultiSigBERT/
 ├── src/
 │   ├── _utils.py
 │   ├── compression_pkg.py
-│   ├── clustering_pkg.py
 │   ├── descriptive_stats_pkg.py
 │   ├── metrics_plot_results_pkg.py
 │   ├── signature_pkg.py
@@ -121,9 +115,7 @@ See [data documentation](./data/README.md) for the detailed schema.
   - The main notebook [`multisigbert_study.ipynb`](./notebooks/multisigbert_study.ipynb) performs:
     - Multimodal embedding extraction and compression
     - Signature computation (configurable truncation order)
-    - kNN graph construction and MST-based clustering
-    - Spectral clustering in signature space
-    - Cluster-specific Cox model training
+    - Cox model training with LASSO regularization
     - Evaluation (C-index, td-AUC, BS, IBS)
 
 
@@ -160,7 +152,6 @@ In addition to standard scientific Python packages (`numpy`, `scipy`, `pandas`, 
 - `skglm`
 - `iisignature`
 - `transformers`
-- `pynndescent`
 
 
 
