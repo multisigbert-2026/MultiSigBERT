@@ -1,4 +1,4 @@
-# MultiSigBERT — ECML PKDD 2026 Submission
+# MultiSigBERT - ECML PKDD 2026 Submission
 
 This repository contains the anonymous implementation of **MultiSigBERT**, a multimodal and temporal survival analysis framework designed for modeling time-to-event outcomes from heterogeneous longitudinal clinical data.
 
